@@ -2,8 +2,10 @@
 #set -x
 clear
 #-------------------------------------------------------------------------
-# What does this script do ? 
+# Description
 #-------------------------------------------------------------------------
+# Version 0.2b
+# 
 # This is a script to test a local network or an entire Country for 
 # SNMP agents answering SNMPv2c queries on UDP port 161
 # with the SNMP Community String "public" 
@@ -12,7 +14,7 @@ clear
 # (C)opyleft Keld Norman, 20 May, 2020
 #
 # PRE: 
-# apt-get update -q && apt-get install parallel snmp ipcalc coreutils nmap curl bc iproute2
+# apt-get update -q && apt-get install parallel snmp ipcalc coreutils masscan nmap curl bc iproute2
 #-------------------------------------------------------------------------
 # Banner (A Must for 1337'ishness): 
 #-------------------------------------------------------------------------
@@ -38,7 +40,9 @@ fi
 # PROGRAMS NEEDED TO DO THE SCAN
 #-------------------------------------------------------------------------
 PARALLEL="/usr/bin/parallel"
-SNMPWALK="/usr/bin/snmpwalk" # if changed then also change below in the script hardcoded
+BASENAME="/usr/bin/basename"
+SNMPWALK="/usr/bin/snmpwalk"
+MASSCAN="/usr/bin/masscan"
 IPCALC="/usr/bin/ipcalc"
 PASTE="/usr/bin/paste"
 NMAP="/usr/bin/nmap"
@@ -49,16 +53,16 @@ IP="/sbin/ip"
 # VARIABLES
 #-------------------------------------------------------------------------
 TIMEOUT=60
-WORKERS=20
+WORKERS=65
 PROCESS_PID=0
 PROCESS_FOUND=0
 PROGNAME=${0##*/}
 SCAN_TIME=$(date +%H%M%S)
 SCAN_DATE=$(date +%Y-%m-%d)
 WORKDIR="/data/SNMP_SCAN/${SCAN_DATE}"
+RUN_DIR="${WORKDIR}/data/clients"
 LOCKFILE="/var/run/${PROGNAME%%.*}.pid"
-# PROWLER NOT IMPLEMENTED YET
-PROWLER="/usr/bin/curl -k https://prowl.weks.net/publicapi/add -F priority=2 -F apikey=put_your_own_key_here -F application=\"TESTLAB\" -F event=\"SNMP_SCANNER\""
+PROWLER="/usr/bin/curl -k https://prowl.weks.net/publicapi/add -F priority=2 -F apikey=b25b371da5eb28dd927f3502cbe7108c447d57b7 -F application=\"STEPSTONE\" -F event=\"SNMP_SCANNER\""
 #-------------------------------------------------------------------------
 # SNMP COMMUNITY LIST
 #-------------------------------------------------------------------------
@@ -209,7 +213,6 @@ if [ -e ${LOCKFILE} ]; then # There is a lockfile
   echo "### ERROR - Lockfile ${LOCKFILE} exist."
   echo "            This script is already running with PID: ${OLD_PROCESS_PID}"
   # logger "Script $0 failed - lock file exist - please investigate"
-  echo ""
   exit 3
  else # The PID found in the lockfile is NOT running - Remove the lock file
   /bin/rm ${LOCKFILE} >/dev/null 2>&1
@@ -225,21 +228,43 @@ function check_pre_req {
  # RUN AS ROOT
  #-------------
  if [ $(id -u) -ne 0 ]; then 
-  printf "\n ### ERROR - This script must be run as root - exiting!\n\n" 1>&2
+  printf "\n ### ERROR - This script must be run as root - exiting!\n" 1>&2
   exit 1
  fi
  #-------------
  if [ ! -d ${WORKDIR} ]; then mkdir -p ${WORKDIR} ; fi
+ if [ ! -d ${RUN_DIR} ]; then mkdir -p ${RUN_DIR} ; fi
  #-------------
  ERROR=0 # FIND ALLE UTILS
- for PROG in ${NMAP} ${CURL} ${PARALLEL} ${IP} ${IPCALC} ${SNMPWALK} ${PASTE} ${BC}; do
+ for PROG in ${NMAP} ${CURL} ${PARALLEL} ${IP} ${IPCALC} ${SNMPWALK} ${PASTE} ${BC} ${MASSCAN} ${BASENAME}; do
   if [ ! -e ${PROG} ] ; then
    printf "\n ### ERROR - Cant run this script - the program ${PROG} is missing!\n"
    ERROR=1
   fi
  done
- if [ ${ERROR:-1} -ne 0 ]; then echo ""; exit 1; fi
- SCAN_ARRAY[0]='test' || (printf "\n ### ERROR - Arrays not supported in this version of bash.\n\n" && exit 2) # CHECK FOR ARRAY SUPPORT
+ if [ ${ERROR:-1} -ne 0 ]; then exit 1; fi
+ SCAN_ARRAY[0]='test' || (printf "\n ### ERROR - Arrays not supported in this version of bash.\n" && exit 2) # CHECK FOR ARRAY SUPPORT
+}
+#-------------------------------------------------------------------------
+function select_scan_tool {
+#-------------------------------------------------------------------------
+ while true; do 
+  echo -n ' Select the scan engine
+ 
+  1. MASSCAN   - Extreme fast but might miss a lot of targets
+  2. NMAP      - Normally scans 1 mill / day and is very accurate
+
+ Select the engine to use for the scanning: '
+ read -s -n1 -r option
+  case $option in
+   1)   SCAN_METHOD="MASSCAN"
+        break;;
+   2)   SCAN_METHOD="NMAP" 
+        break;;
+   *)   clear; printf "\n Invalid option !\n\n" ;;
+  esac
+ done
+ printf "\n"
 }
 #-------------------------------------------------------------------------
 function select_what_to_scan () {
@@ -268,7 +293,6 @@ function select_what_to_scan () {
 #-------------------------------------------------------------------------
 function select_scan_adapter {
 #-------------------------------------------------------------------------
- echo ""
  ADAPTERS_COUNT=$(${IP} -4 l show|grep -v lo:|grep -c UP)
  if [ ${ADAPTERS_COUNT} -eq 1 ]; then
   ADAPTER=$(${IP} -4 l show|grep UP|grep -v lo:|cut -d ':' -f2|awk '{print $1}'|head -1)
@@ -292,6 +316,7 @@ function select_scan_adapter {
   select SELECT_ADAPTER in ${VALID_CARDS}; do
    if [ "${SELECT_ADAPTER:-empty}" != "empty" ]; then
     ADAPTER="${SELECT_ADAPTER}"
+    echo ""
     break
    else
     echo -e "\033[2A "
@@ -311,7 +336,6 @@ while true; do
  read -r NET
  validate_ip
  if [ ${VALID_NET} -eq 1 ]; then
-  echo ""
   echo ${NET} > ${WORKDIR}/snmp_targets.list
   break
  else
@@ -343,10 +367,10 @@ while [ -z ${COUNTRY} ]; do
   echo -e "\033[2A "
  done
 done
- printf "\n Getting the latest IP list for country: %s\n\n" ${COUNTRY^^}
+ printf "\n Getting the latest IP list for country: %s\n" ${COUNTRY^^}
  CURL_DATA=$( ${CURL} --silent "https://stat.ripe.net/data/country-resource-list/data.json?resource=${COUNTRY,,}&v4_format=prefix"|grep -E -o '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\/([0-9]|[1-3][0-9])' )
  if [ -z "${CURL_DATA}" ]; then 
-  printf " ### ERROR - No data returned from stat.ripe.net..\n\n"
+  printf " ### ERROR - No data returned from stat.ripe.net..\n"
   exit 1
  else
   NET="$(echo ${CURL_DATA})"
@@ -404,14 +428,15 @@ fi
 function select_community {
 #-------------------------------------------------------------------------
  while true; do 
+  echo ""
   echo -n ' Select the community string you want to test the SNMP server with
  
   1. public   - Use the name "public"
   2. CUSTOM   - Enter your own custom search string
   3. BRUTE    - Bruteforce with the list included in this script
-  4. NONE     - Stop and do not scan for a community
+  4. NONE     - Stop and do not query open ports with a community
 
- Select a pre defined tag ( or C to enter your own custom string): '
+ Select a pre defined tag ( or 2 to enter your own custom string): '
  read -n1 -r option
   case $option in
    1)   SNMP_COMMUNITY="public" 
@@ -424,7 +449,7 @@ function select_community {
    3)   SNMP_COMMUNITY="${SNMP_COMMUNITY_LIST}"
         echo "${SNMP_COMMUNITY_LIST}" > ${WORKDIR}/snmp_community.list
         break;;
-   4)   NO_COMMUNITY_SCAN=1
+   4)   NO_SNMPWALK=1
         break;;
    *)   clear; printf "\n Invalid option !\n\n" ;;
   esac
@@ -434,93 +459,104 @@ function select_community {
 #-------------------------------------------------------------------------
 function scan_snmp {                              # nc 85.204.133.1 -u 161
 #-------------------------------------------------------------------------
+ printf "\n - Calculating total amount of hosts to scan: "
  TOTAL_HOSTS_TO_SCAN=$(for RANGE in ${NET}; do
-   ${IPCALC} -n -b ${RANGE}|grep ^Hosts/Net|awk '{print $2}'
-   done | ${PASTE} -s -d+ - | ${BC})
- printf "\n $(date) - Starting scan of ${TOTAL_HOSTS_TO_SCAN} hosts..\n"
+  ${IPCALC} -n -b ${RANGE}|grep ^Hosts/Net|awk '{print $2}'
+ done | ${PASTE} -s -d+ - | ${BC})
+ printf "%s\n\n" ${TOTAL_HOSTS_TO_SCAN}
+ printf -- " ---------------------------------------------------------------------\n"
+ printf " $(date) - Starting ${SCAN_METHOD} scan of ${TOTAL_HOSTS_TO_SCAN} hosts..\n"
  printf -- " ---------------------------------------------------------------------\n"
  echo "$(date)" > ${WORKDIR}/.running
- printf " ### Running: %s -T5 -n --open -p 161 -sU %s ..\n" ${NMAP} "${NET:0:30}"
- ${NMAP} -T5 -Pn -n --open --stats-every 1m -p 161 -sU ${NET} -oG ${WORKDIR}/nmap_snmp_targets.list 2>&1|while read LINE ; do
-  if [ ! -z "${LINE}" ]; then
-   if [ $(echo ${LINE}|grep -c "^Stats:") -ne 0 ]; then
-    printf " Elapsed: %s hosts: %-9s complete %9s [ next %s undergoing UDP Scan: " $(echo "${LINE}"|tr '(' ' '|awk '{print $2,$4,$7,$9}')
-   elif [ $(echo ${LINE}|grep -c "^UDP") -ne 0 ]; then
-    printf "%7s procent ETC: %s Remaning %s ]\n" $(echo ${LINE}|tr '(' ' '|awk '{print $5,$8,$9}')
-   fi
-  fi
- done
+ case ${SCAN_METHOD:-NMAP} in 
+
+  "NMAP")   SCAN_COMMAND="${NMAP} -T5 -Pn -n --stats-every 1m -p 161 -sU ${NET} -oG ${WORKDIR}/snmp_targets.list"
+            printf " ### Running: %s -T5 -n -p 161 -sU %s ...\n" ${NMAP} "${NET:0:30}"
+            ${SCAN_COMMAND} 2>&1|while read LINE ; do
+             if [ ! -z "${LINE}" ]; then
+              if [ $(echo ${LINE}|grep -c "^Stats:") -ne 0 ]; then
+               printf " Elapsed: %s hosts: %-9s complete %9s [ next %s undergoing UDP Scan: " $(echo "${LINE}"|tr '(' ' '|awk '{print $2,$4,$7,$9}')
+              elif [ $(echo ${LINE}|grep -c "^UDP") -ne 0 ]; then
+               printf "%7s procent ETC: %s Remaning %s ]\n" $(echo ${LINE}|tr '(' ' '|awk '{print $5,$8,$9}')
+              fi
+             fi
+             done
+             ;;
+ 
+  "MASSCAN") SCAN_COMMAND="${MASSCAN} --ports U:161 ${NET} -oG ${WORKDIR}/snmp_targets.list"
+             printf " ### Running: %s --ports U:161 %s ..\n" ${MASSCAN} "${NET:0:30}"
+             #printf " ( NB: Open ports reporting is always 0 - please ignore that. )\n"
+             ${SCAN_COMMAND} 2>&1
+             ;;
+
+  *)         printf " ### ERROR - No valid scan method found!\n"
+             exit 1
+             ;;
+ esac
  printf -- " ---------------------------------------------------------------------\n"
  echo " $(date) - done"
- printf "\n Found %d target(s) with port 161 open..\n" $(grep -c "161/open/udp" ${WORKDIR}/nmap_snmp_targets.list)
+ printf -- " ---------------------------------------------------------------------\n"
+ #----------------------------
+ printf "\n Found %d target(s) with port 161 open..\n" $(grep -c "161/open/udp" ${WORKDIR}/snmp_targets.list)
 }
 #-------------------------------------------------------------------------
-function extract_data {
+function run_snmpwalk {
 #-------------------------------------------------------------------------
-if [ ${NO_COMMUNITY_SCAN:-0} -ne 1 ]; then 
- #-----------------------------
- # CHECK VALID TARGETS
- #-----------------------------
- VALID_TARGETS="${WORKDIR}/snmp_targets_open_ports.list"
- grep  "161/open/udp" ${WORKDIR}/nmap_snmp_targets.list 2>/dev/null|cut -d" " -f2 > ${VALID_TARGETS}
- COUNT_VALID_TARGETS=$(cat ${VALID_TARGETS}|wc -l)
- if [ ${COUNT_VALID_TARGETS:-0} -eq 0 ]; then 
-  printf " ### ERROR - No valid targets found to interrogate!\n\n"
-  exit 1
+ if [ ${NO_SNMPWALK:-0} -eq 1 ]; then 
+  printf " \n ### INFO - Skipping SNMP walk as requested..\n\n"
+  return
  fi
  #-----------------------------
  # CHECK COMMUNITIES
  #-----------------------------
  COUNT_COMMUNITIES=$(cat ${WORKDIR}/snmp_community.list 2>/dev/null | wc -l)
  if [ ${COUNT_COMMUNITIES:-0} -eq 0 ]; then 
-  printf " ### ERROR - No communities specified!\n\n"
+  printf "\n ### ERROR - No communities specified in ${WORKDIR}/snmp_community.list !\n"
   exit 1
  fi
- #-------------------------------------
- # CREATE THE DATA AND CLIENT DIRECTORY
- #-------------------------------------
- if [ ! -d ${WORKDIR}/data ]; then 
-  mkdir ${WORKDIR}/data
+ #-----------------------------
+ # CHECK VALID TARGETS
+ #-----------------------------
+ VALID_TARGETS="${WORKDIR}/snmp_targets_ip.list"
+ grep  "161/open/udp" ${WORKDIR}/snmp_targets.list 2>/dev/null|cut -d" " -f2 > ${VALID_TARGETS}
+ COUNT_VALID_TARGETS=$(cat ${VALID_TARGETS} 2>/dev/null|wc -l)
+ TARGETS_ERROR=0
+ if [ ${COUNT_VALID_TARGETS:-0} -eq 0 ]; then 
+  printf "\n ### INFO - No valid targets with status \"open\" found to interrogate!\n"
+  let "TARGETS_ERROR++"
  fi
- RUN_DIR="${WORKDIR}/data"
- if [ ! -d ${RUN_DIR}/clients ]; then 
-  mkdir -p ${RUN_DIR}/clients
+ # UNKNOWN_TARGETS="${WORKDIR}/snmp_targets_filteret_ip.list"
+ # grep  "161/open|filtered/udp" ${WORKDIR}/snmp_targets.list 2>/dev/null|cut -d" " -f2 > ${UNKNOWN_TARGETS}
+ # COUNT_UNKNOWN_TARGETS=$(cat ${UNKNOWN_TARGETS} 2>/dev/null|wc -l) 
+ # if [ ${COUNT_UNKNOWN_TARGETS:-0} -eq 0 ]; then 
+ #  printf "\n ### INFO - No targets with status \"open|filtered\" found to interrogate!\n"
+ #  let "TARGETS_ERROR++"
+ # fi
+ if [ ${TARGETS_ERROR:-0} -eq 2 ]; then 
+  printf "\n ### ERROR - No targeti(s) found to interrogate!\n"
+  exit 1
  fi
  cd ${RUN_DIR}
- #----------------------------------
- # BUILD SCRIPT MULTIPLE COMMUNITIES
- #----------------------------------
- SCRIPT="${RUN_DIR}/snmpwalk.sh"
+ #-----------------------------
+ # BUILD SNMP WALK SCRIPT
+ #-----------------------------
+ SCRIPT="${RUN_DIR}/../snmpwalk.sh"
  touch ${SCRIPT}
  chmod 700 ${SCRIPT}
  chown root:root ${SCRIPT}
- cat << "EOF" > ${SCRIPT}
-#!/bin/bash
-if [ ! -d ${3}/${1} ]; then mkdir -p ${3}/${1}; fi
-/usr/bin/snmpwalk -v2c -c ${2} ${1} > ${3}/${1}/${1}_${2}_scan_result.log
-EOF
+ echo "#!/bin/bash"                                                                                       > ${SCRIPT}
+ echo "if [ ! -d ${RUN_DIR}/\${1} ]; then mkdir -p ${RUN_DIR}/\${1}; fi"                                 >> ${SCRIPT}
+ echo "for COMMUNITY in \$(cat ${WORKDIR}/snmp_community.list); do"                                      >> ${SCRIPT} 
+ echo " ${SNMPWALK} -v2c -c \${COMMUNITY} \${1} > ${RUN_DIR}/\${1}/\${1}_\${COMMUNITY}_scan_result.log"  >> ${SCRIPT}
+ echo "done"                                                                                             >> ${SCRIPT}
  #----------------------------------
  # START SCANNING
  #----------------------------------
  printf "\n ### Testing %d targets with %d communities..\n\n" ${COUNT_VALID_TARGETS} ${COUNT_COMMUNITIES}
  echo " $(date) - Starting scan.."
  printf -- " ---------------------------------------------------\n"
- #
- for TARGET in $(cat ${VALID_TARGETS}); do 
-  if [ $(echo ${TARGET} | grep -c '/') -ne 0 ]; then 
-   printf " ### WARNING - Found a target with a cidr : ${TARGET} .. skipping it!\n"
-   break
-  fi
-  if [ ! -d ${RUN_DIR}/clients/${TARGET} ]; then 
-   mkdir -p ${RUN_DIR}/clients/${TARGET}
-  fi
-  if [ ${COUNT_COMMUNITIES} -eq 1 ]; then 
-   printf "\n ### Testing ${TARGET} with community \"$(cat ${WORKDIR}/snmp_community.list)\" ..\n"
-  else
-   printf "\n ### Testing ${TARGET} with ${COUNT_COMMUNITIES} different communities..\n"
-  fi
-  JOB_LOG="${RUN_DIR}/clients/${TARGET}/snmp.job.log"
-  if [ -f ${JOB_LOG} ]; then rm ${JOB_LOG} ; fi
+ JOB_LOG="${RUN_DIR}/parallel.snmp.job.log"
+ if [ -f ${JOB_LOG} ]; then rm ${JOB_LOG} ; fi
   ${PARALLEL} \
    --shuf     \
    --eta      \
@@ -530,55 +566,51 @@ EOF
    --timeout ${TIMEOUT}   \
    --max-procs ${WORKERS} \
    --joblog ${JOB_LOG}    \
-   -a ${WORKDIR}/snmp_community.list ${SCRIPT} ${TARGET} {} ${RUN_DIR}/clients/${TARGET} 
-  if [ -f ${JOB_LOG} ]; then rm ${JOB_LOG} ; fi
- done
- #
- ${PARALLEL} --wait
+   -a ${VALID_TARGETS} ${SCRIPT} {} 
+ if [ -f ${JOB_LOG} ]; then rm ${JOB_LOG} ; fi
+ echo ${PARALLEL} --wait
  printf -- "\n ---------------------------------------------------\n"
  echo " $(date) - done"
-fi
 }
 #-------------------------------------------------------------------------
 function generate_report {
 #-------------------------------------------------------------------------
-# printf "\n Processing results..\n"
- /usr/bin/find ${RUN_DIR:-/error}/clients -type f -name "*_scan_result.log" -size 0c -delete 2>/dev/null 
- COUNT=0
- for FILE in $(/usr/bin/find ${RUN_DIR:-/error}/clients -type f -name "*_scan_result.log" 2>/dev/null ) ; do 
-  if [ -s ${FILE} ]; then 
-   if [ $(cat ${FILE}|grep -c "^ERROR: No response") -ne 12 ]; then 
-    let COUNT=${COUNT}+1
-   fi
-  fi
- done
- if [ ${COUNT:-0} -ne 0 ]; then 
-  printf "\n Found %d results(s)..\n\n" ${COUNT}
-  /usr/bin/find ${RUN_DIR:-/error}/clients -type f -name "*_scan_result.log" -ls 2>/dev/null|while read n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11; do
-   printf " Size: %-10d File: %s\n" $n7 $n11
-  done
- else
-  printf "\n No data found found!\n" 
- fi
+ printf "\n Creating the report..\n\n"
+ #-------------------------
+ # CLEANUP BEFORE REPORTING
+ #-------------------------
+ EMPTY_RESULTS=$(/usr/bin/find ${RUN_DIR:-/error} -type f -name "*\.*\.*\.*_scan_result.log" -size 0c|wc -l)
+ if [ ${EMPTY_RESULTS:-0} -ne 0 ]; then 
+  printf " ### INFO - Removing ${EMPTY_RESULTS} empty results..\n\n"
+  /usr/bin/find ${RUN_DIR:-/error} -type f -name "*\.*\.*\.*_scan_result.log" -size 0c -delete
+ fi 
+ /usr/bin/find ${RUN_DIR:-/error} -type d -empty -delete
+ #-------------------------
+ # REPORT SOMETHING
+ #-------------------------
+ printf " Found the following results/ommunity: \n\n"
+ find ${RUN_DIR}/*/* -type f -name "*\.*\.*\.*_scan_result.log"|cut -d '_' -f3|sort -n|uniq -c
+
+ #-------------------------
+ # END OF REPORTING
+ #-------------------------
+ printf "\n Stopped reporting function..\n"
 }
 #-------------------------------------------------------------------------
 # MAIN
 #-------------------------------------------------------------------------
 check_pre_req
-#
-select_what_to_scan
-select_community
-#
-scan_snmp
-extract_data
-#
+
+#select_scan_tool
+#select_what_to_scan
+#select_community
+
+#scan_snmp
+#run_snmpwalk
+
 generate_report
+#
 #-------------------------------------------------------------------------
 # FINISHED PROCESSING
 #-------------------------------------------------------------------------
-# TRANSFORM CIDR TO LIST - TO BE USED IN LATER DEV OF THIS SCRIPT..
-#${NMAP} -sL ${NET}|awk '/Nmap scan report/{print $NF}' 2>/dev/null|egrep -v "\.0$|\.255$" >> ${VALID_TARGETS}
-# if [ $? -ne 0 ] ;then 
-#  printf " ### INFO - Converting ${NET} to a list of IP adresses failed!\n"
-# fi
-#-------------------------------------------------------------------------
+# BETA: ${NMAP} -sL ${NET}|awk '/Nmap scan report/{print $NF}' 2>/dev/null|egrep -v "\.0$|\.255$" >> ${VALID_TARGETS}
