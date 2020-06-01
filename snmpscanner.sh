@@ -4,7 +4,7 @@ clear
 #-------------------------------------------------------------------------
 # Description
 #-------------------------------------------------------------------------
-# Version 0.2b
+# Version 0.3b
 # 
 # This is a script to test a local network or an entire Country for 
 # SNMP agents answering SNMPv2c queries on UDP port 161
@@ -62,7 +62,6 @@ SCAN_DATE=$(date +%Y-%m-%d)
 WORKDIR="/data/SNMP_SCAN/${SCAN_DATE}"
 RUN_DIR="${WORKDIR}/data/clients"
 LOCKFILE="/var/run/${PROGNAME%%.*}.pid"
-PROWLER="/usr/bin/curl -k https://prowl.weks.net/publicapi/add -F priority=2 -F apikey=b25b371da5eb28dd927f3502cbe7108c447d57b7 -F application=\"STEPSTONE\" -F event=\"SNMP_SCANNER\""
 #-------------------------------------------------------------------------
 # SNMP COMMUNITY LIST
 #-------------------------------------------------------------------------
@@ -613,4 +612,3 @@ generate_report
 #-------------------------------------------------------------------------
 # FINISHED PROCESSING
 #-------------------------------------------------------------------------
-# BETA: ${NMAP} -sL ${NET}|awk '/Nmap scan report/{print $NF}' 2>/dev/null|egrep -v "\.0$|\.255$" >> ${VALID_TARGETS}
