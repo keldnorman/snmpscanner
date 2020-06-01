@@ -4,5 +4,8 @@ Test a country for SNMP agents answering SNMPv2c queries on UDP port 161 with th
 # PRE: 
 apt-get update -q && apt-get install parallel snmp ipcalc coreutils nmap curl bc iproute2
 
+# Run parallel -citation
+parallel -citation # then enter "will cite" 
+
 # Syntax: 
 ./snmpscanner.sh
