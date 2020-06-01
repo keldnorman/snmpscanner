@@ -15,6 +15,10 @@ clear
 #
 # PRE: 
 # apt-get update -q && apt-get install parallel snmp ipcalc coreutils masscan nmap curl bc iproute2
+# 
+# Also run: 
+# parallel --citation    # and then type in "will site" and send good thoughts to Ole Tange who made the tool !
+# 
 #-------------------------------------------------------------------------
 # Banner (A Must for 1337'ishness): 
 #-------------------------------------------------------------------------
@@ -237,7 +241,9 @@ function check_pre_req {
  ERROR=0 # FIND ALLE UTILS
  for PROG in ${NMAP} ${CURL} ${PARALLEL} ${IP} ${IPCALC} ${SNMPWALK} ${PASTE} ${BC} ${MASSCAN} ${BASENAME}; do
   if [ ! -e ${PROG} ] ; then
-   printf "\n ### ERROR - Cant run this script - the program ${PROG} is missing!\n"
+   printf "\n ### ERROR - Cant run this script - the program ${PROG} is missing!\n\n"
+   printf " Run this and try again:\n\n"
+   printf "   apt-get update -q && apt-get install parallel snmp ipcalc coreutils masscan nmap curl bc iproute2\n"
    ERROR=1
   fi
  done
@@ -484,7 +490,7 @@ function scan_snmp {                              # nc 85.204.133.1 -u 161
  
   "MASSCAN") SCAN_COMMAND="${MASSCAN} --ports U:161 ${NET} -oG ${WORKDIR}/snmp_targets.list"
              printf " ### Running: %s --ports U:161 %s ..\n" ${MASSCAN} "${NET:0:30}"
-             #printf " ( NB: Open ports reporting is always 0 - please ignore that. )\n"
+             printf " ( NB: Masscan report of open ports during scan is always 0 - please ignore that. )\n"
              ${SCAN_COMMAND} 2>&1
              ;;
 
@@ -496,7 +502,12 @@ function scan_snmp {                              # nc 85.204.133.1 -u 161
  echo " $(date) - done"
  printf -- " ---------------------------------------------------------------------\n"
  #----------------------------
- printf "\n Found %d target(s) with port 161 open..\n" $(grep -c "161/open/udp" ${WORKDIR}/snmp_targets.list)
+ FOUND_OPEN=$(grep -c "161/open/udp" ${WORKDIR}/snmp_targets.list)
+ FOUND_FILTERED=$(grep -c "161/open|filtered/udp" ${WORKDIR}/snmp_targets.list)
+ printf "\n Found %d target(s) with port 161 open (%d target(s) with status open|filtered)..\n" ${FOUND_OPEN} ${FOUND_FILTERED}
+ if [ ${FOUND_OPEN} -eq 0 ]; then 
+  exit 1
+ fi
 }
 #-------------------------------------------------------------------------
 function run_snmpwalk {
@@ -567,7 +578,7 @@ function run_snmpwalk {
    --joblog ${JOB_LOG}    \
    -a ${VALID_TARGETS} ${SCRIPT} {} 
  if [ -f ${JOB_LOG} ]; then rm ${JOB_LOG} ; fi
- echo ${PARALLEL} --wait
+ # ${PARALLEL} --wait
  printf -- "\n ---------------------------------------------------\n"
  echo " $(date) - done"
 }
@@ -578,35 +589,36 @@ function generate_report {
  #-------------------------
  # CLEANUP BEFORE REPORTING
  #-------------------------
- EMPTY_RESULTS=$(/usr/bin/find ${RUN_DIR:-/error} -type f -name "*\.*\.*\.*_scan_result.log" -size 0c|wc -l)
+ EMPTY_RESULTS=$(/usr/bin/find ${RUN_DIR:-/error} -type f -name "*\.*\.*\.*_scan_result.log" -size 0c 2>/dev/null|wc -l)
  if [ ${EMPTY_RESULTS:-0} -ne 0 ]; then 
   printf " ### INFO - Removing ${EMPTY_RESULTS} empty results..\n\n"
-  /usr/bin/find ${RUN_DIR:-/error} -type f -name "*\.*\.*\.*_scan_result.log" -size 0c -delete
+  /usr/bin/find ${RUN_DIR:-/error} -type f -name "*\.*\.*\.*_scan_result.log" -size 0c -delete 2>/dev/null
  fi 
- /usr/bin/find ${RUN_DIR:-/error} -type d -empty -delete
+ /usr/bin/find ${RUN_DIR:-/error} -type d -empty -delete 2>/dev/null
  #-------------------------
  # REPORT SOMETHING
  #-------------------------
+ RESULTS_TOTAL=$(find ${RUN_DIR}/*/* -type f -name "*\.*\.*\.*_scan_result.log" 2>/dev/null|wc -l)
+ 
+ if [ ${RESULTS_TOTAL} -eq 0 ]; then 
+  printf " Nothing found to report on!\n"
+  exit 1	  
+ fi
  printf " Found the following results/ommunity: \n\n"
- find ${RUN_DIR}/*/* -type f -name "*\.*\.*\.*_scan_result.log"|cut -d '_' -f3|sort -n|uniq -c
-
+ find ${RUN_DIR}/*/* -type f -name "*\.*\.*\.*_scan_result.log" 2>/dev/null|cut -d '_' -f3|sort -n|uniq -c 
  #-------------------------
  # END OF REPORTING
  #-------------------------
- printf "\n Stopped reporting function..\n"
 }
 #-------------------------------------------------------------------------
 # MAIN
 #-------------------------------------------------------------------------
 check_pre_req
-
-#select_scan_tool
-#select_what_to_scan
-#select_community
-
-#scan_snmp
-#run_snmpwalk
-
+select_scan_tool
+select_what_to_scan
+select_community
+scan_snmp
+run_snmpwalk
 generate_report
 #
 #-------------------------------------------------------------------------
